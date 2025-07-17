@@ -281,13 +281,13 @@ async def handle_other_messages(message: types.Message):
     else:
         await message.answer("👋 Привет! Нажмите /start для начала работы с ботом")
 
+async def on_startup(dp):
+    """Функция, которая выполняется при запуске бота"""
+    try:
+        await bot.delete_webhook()
+        logging.info("Webhook удален")
+    except Exception as e:
+        logging.error(f"Ошибка при удалении webhook: {e}")
+
 if __name__ == '__main__':
-    async def startup():
-        try:
-            await bot.delete_webhook()
-            logging.info("Webhook удален")
-        except Exception as e:
-            logging.error(f"Ошибка при удалении webhook: {e}")
-    
-    asyncio.run(startup())
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
