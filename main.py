@@ -1,206 +1,181 @@
-import os
 import logging
+import os
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher.filters import Text
+from aiogram.utils.callback_data import CallbackData
 
 API_TOKEN = os.getenv("YOUR_BOT_TOKEN")
-if not API_TOKEN:
-    raise RuntimeError("❌ Не задан YOUR_BOT_TOKEN")
+ADMIN_ID = 884963545
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# --- Данные ---
+# Модерация CallbackData
+moderation_cb = CallbackData("mod", "action", "ad_id")
 
-CATEGORIES = [
-    "🏢 Работа",
-    "🏠 Аренда жилья",
-    "🚗 Продажа авто",
-    "🎉 Мероприятия",
-    "🛒 Барахолка",
-    "🎁 Даром"
-]
+class Form(StatesGroup):
+    category = State()
+    city = State()
+    title = State()
+    description = State()
+    price = State()
+    contacts = State()
+    photos = State()
 
-CITIES = {
-    "Север": ["Хайфа", "Нагария", "Акко", "Кармиэль", "Цфат", "Назарет", "Ацмон", "Маалот", "Кацрин", "Тверия"],
-    "Центр": ["Тель-Авив", "Нетания", "Герцлия", "Бат-Ям", "Холон", "Рамат-Ган", "Петах-Тиква", "Ришон-ле-Цион", "Бней-Брак", "Раанана"],
-    "Юг": ["Беэр-Шева", "Ашдод", "Ашкелон", "Эйлат", "Кирьят-Гат", "Сдерот", "Мицпе-Рамон", "Димона", "Офаким", "Нетивот"]
-}
-
-# Хранилище объявлений в формате:
-# { user_id: [ {category, city, description, photos:list(file_id)} ] }
+ads = {}
 user_ads = {}
+ad_counter = 0
 
-# --- Клавиатуры ---
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add("Вакансии", "Продажа машин")
+main_menu.add("Аренда жилья", "Мероприятия")
+main_menu.add("Барахолка", "Даром")
+main_menu.add("Подать объявление")
 
-def main_menu_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ Добавить объявление")
-    kb.add("👤 Мои объявления")
-    return kb
-
-def categories_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for cat in CATEGORIES:
-        kb.add(cat)
-    kb.add("❌ Отмена")
-    return kb
-
-def cities_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for region, cities in CITIES.items():
-        kb.add(f"⬇️ {region}")
-        for city in cities:
-            kb.add(city)
-    kb.add("❌ Отмена")
-    return kb
-
-def back_to_main_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("🔙 Главное меню")
-    return kb
-
-# --- FSM States ---
-
-class AdForm(StatesGroup):
-    waiting_for_category = State()
-    waiting_for_city = State()
-    waiting_for_description = State()
-    waiting_for_photos = State()
-    confirm = State()
-
-# --- Хендлеры ---
+regions = {
+    "Север": ["Хайфа", "Акко", "Нагария", "Цфат", "Тверия"],
+    "Центр": ["Тель-Авив", "Нетания", "Петах-Тиква", "Рамат-Ган", "Холон"],
+    "Юг": ["Беэр-Шева", "Ашдод", "Ашкелон", "Эйлат", "Кирьят-Гат"]
+}
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
-    await message.answer(
-        "👋 Привет! Я помогу разместить твои объявления.\n\n"
-        "Выбери действие:",
-        reply_markup=main_menu_kb()
-    )
+    await message.answer("Добро пожаловать в Yalla Bot 🇮🇱\nВыберите категорию:", reply_markup=main_menu)
 
-@dp.message_handler(lambda msg: msg.text == "➕ Добавить объявление")
-async def add_ad_start(message: types.Message):
-    await message.answer("Выберите категорию объявления:", reply_markup=categories_kb())
-    await AdForm.waiting_for_category.set()
+@dp.message_handler(lambda message: message.text == "Подать объявление")
+async def ad_create_start(message: types.Message, state: FSMContext):
+    await Form.category.set()
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    for row in main_menu.keyboard:
+        for button in row:
+            if button.text != "Подать объявление":
+                keyboard.add(button.text)
+    keyboard.add("Назад")
+    await message.answer("Выберите категорию объявления:", reply_markup=keyboard)
 
-@dp.message_handler(state=AdForm.waiting_for_category)
-async def ad_category_chosen(message: types.Message, state: FSMContext):
-    if message.text not in CATEGORIES:
-        await message.answer("Пожалуйста, выберите категорию из списка или отмените.")
+@dp.message_handler(state=Form.category)
+async def select_category(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await state.finish()
+        await cmd_start(message)
         return
     await state.update_data(category=message.text)
-    # Отправляем города (разделяем регионы)
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    for region, cities in CITIES.items():
-        kb.add(f"⬇️ {region}")
-        for city in cities:
-            kb.add(city)
-    kb.add("❌ Отмена")
-    await message.answer("Теперь выберите город:", reply_markup=kb)
-    await AdForm.waiting_for_city.set()
+    await Form.next()
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    for region, cities in regions.items():
+        keyboard.add(*cities)
+    keyboard.add("Назад")
+    await message.answer("Выберите город:", reply_markup=keyboard)
 
-@dp.message_handler(state=AdForm.waiting_for_city)
-async def ad_city_chosen(message: types.Message, state: FSMContext):
-    all_cities = sum(CITIES.values(), [])
-    if message.text == "❌ Отмена":
-        await state.finish()
-        await message.answer("Добавление объявления отменено.", reply_markup=main_menu_kb())
-        return
-    if message.text not in all_cities:
-        await message.answer("Пожалуйста, выберите город из списка или отмените.")
+@dp.message_handler(state=Form.city)
+async def select_city(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await Form.category.set()
+        await ad_create_start(message, state)
         return
     await state.update_data(city=message.text)
-    await message.answer("Опишите ваше объявление (текст, до 1000 символов):", reply_markup=ReplyKeyboardRemove())
-    await AdForm.waiting_for_description.set()
+    await Form.next()
+    await message.answer("Введите заголовок объявления:", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Назад"))
 
-@dp.message_handler(state=AdForm.waiting_for_description, content_types=types.ContentTypes.TEXT)
-async def ad_description_received(message: types.Message, state: FSMContext):
-    text = message.text.strip()
-    if len(text) > 1000:
-        await message.answer("Слишком длинное описание, пожалуйста, сократите до 1000 символов.")
+@dp.message_handler(state=Form.title)
+async def enter_title(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await Form.city.set()
+        await select_city(message, state)
         return
-    await state.update_data(description=text)
-    await message.answer(
-        "Теперь отправьте фото для объявления (можно до 5 штук).\n"
-        "Отправьте /done, когда закончите добавлять фото.\n"
-        "Если фото не нужны — сразу отправьте /done.",
-        reply_markup=back_to_main_kb()
-    )
-    await AdForm.waiting_for_photos.set()
+    await state.update_data(title=message.text)
+    await Form.next()
+    await message.answer("Введите описание:", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Назад"))
 
-@dp.message_handler(state=AdForm.waiting_for_photos, content_types=[types.ContentType.PHOTO, types.ContentType.TEXT])
-async def ad_photos_handler(message: types.Message, state: FSMContext):
-    if message.text == "/done":
-        data = await state.get_data()
-        category = data['category']
-        city = data['city']
-        description = data['description']
-        photos = data.get('photos', [])
-        user_id = message.from_user.id
-
-        # Сохраняем объявление
-        ad = {
-            "category": category,
-            "city": city,
-            "description": description,
-            "photos": photos
-        }
-        user_ads.setdefault(user_id, []).append(ad)
-        await message.answer("✅ Ваше объявление опубликовано!", reply_markup=main_menu_kb())
-        await state.finish()
+@dp.message_handler(state=Form.description)
+async def enter_description(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await Form.title.set()
+        await enter_title(message, state)
         return
+    await state.update_data(description=message.text)
+    await Form.next()
+    await message.answer("Введите цену:", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Назад"))
 
-    if message.photo:
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        data = await state.get_data()
-        photos = data.get("photos", [])
-        if len(photos) >= 5:
-            await message.answer("⚠️ Можно добавить не более 5 фото.")
-            return
-        photos.append(file_id)
-        await state.update_data(photos=photos)
-        await message.answer(f"Фото принято ({len(photos)}/5). Отправьте ещё или /done для окончания.")
+@dp.message_handler(state=Form.price)
+async def enter_price(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await Form.description.set()
+        await enter_description(message, state)
+        return
+    await state.update_data(price=message.text)
+    await Form.next()
+    await message.answer("Укажите контакты (телефон, Telegram и т.п.):", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Назад"))
+
+@dp.message_handler(state=Form.contacts)
+async def enter_contacts(message: types.Message, state: FSMContext):
+    if message.text == "Назад":
+        await Form.price.set()
+        await enter_price(message, state)
+        return
+    await state.update_data(contacts=message.text)
+    await Form.next()
+    await message.answer("Отправьте фото объявления (до 5 штук):")
+
+@dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.photos)
+async def receive_photos(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(photos=photos)
+    if len(photos) >= 5:
+        await finish_ad_creation(message, state)
     else:
-        await message.answer("Пожалуйста, отправьте фото или команду /done.")
+        await message.answer("Фото получено. Можете отправить еще или введите /done, чтобы завершить.")
 
-@dp.message_handler(lambda msg: msg.text == "👤 Мои объявления")
-async def show_my_ads(message: types.Message):
-    user_id = message.from_user.id
-    ads = user_ads.get(user_id)
-    if not ads:
-        await message.answer("У вас нет опубликованных объявлений.", reply_markup=main_menu_kb())
-        return
-    for i, ad in enumerate(ads, 1):
-        text = (
-            f"📌 Объявление #{i}\n"
-            f"Категория: {ad['category']}\n"
-            f"Город: {ad['city']}\n"
-            f"Описание: {ad['description']}"
-        )
-        if ad['photos']:
-            media = [types.InputMediaPhoto(file_id) for file_id in ad['photos']]
-            await message.answer_media_group(media)
-        await message.answer(text)
-    await message.answer("Это все ваши объявления.", reply_markup=main_menu_kb())
+@dp.message_handler(commands=["done"], state=Form.photos)
+async def finish_photo_upload(message: types.Message, state: FSMContext):
+    await finish_ad_creation(message, state)
 
-@dp.message_handler(lambda msg: msg.text == "🔙 Главное меню")
-async def back_to_main(message: types.Message, state: FSMContext):
+async def finish_ad_creation(message: types.Message, state: FSMContext):
+    global ad_counter
+    data = await state.get_data()
+    ad_id = str(ad_counter)
+    ad_counter += 1
+    ads[ad_id] = data
+    user_ads.setdefault(message.from_user.id, []).append(ad_id)
     await state.finish()
-    await message.answer("Возврат в главное меню.", reply_markup=main_menu_kb())
 
-@dp.message_handler()
-async def fallback(message: types.Message):
-    await message.answer("Пожалуйста, используйте меню ниже.", reply_markup=main_menu_kb())
+    media = [InputMediaPhoto(photo) for photo in data["photos"]]
+    caption = f"<b>{data['title']}</b>\n📍 {data['city']}\n💰 {data['price']}\n📝 {data['description']}\n📞 {data['contacts']}"
+    markup = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("✅ Одобрить", callback_data=moderation_cb.new(action="approve", ad_id=ad_id)),
+        InlineKeyboardButton("❌ Отклонить", callback_data=moderation_cb.new(action="reject", ad_id=ad_id))
+    )
+    if len(media) == 1:
+        await bot.send_photo(ADMIN_ID, photo=media[0].media, caption=caption, reply_markup=markup, parse_mode="HTML")
+    else:
+        media[0].caption = caption
+        media[0].parse_mode = "HTML"
+        await bot.send_media_group(ADMIN_ID, media=media)
+        await bot.send_message(ADMIN_ID, "Выберите действие:", reply_markup=markup)
+
+@dp.callback_query_handler(moderation_cb.filter())
+async def moderation_action_handler(query: types.CallbackQuery, callback_data: dict):
+    action = callback_data["action"]
+    ad_id = callback_data["ad_id"]
+    ad = ads.get(ad_id)
+    if not ad:
+        await query.answer("Объявление не найдено", show_alert=True)
+        return
+
+    if action == "approve":
+        await bot.send_message(ad["contacts"], "Ваше объявление одобрено ✅")
+        await query.answer("Одобрено")
+    elif action == "reject":
+        await bot.send_message(ad["contacts"], "Ваше объявление отклонено ❌")
+        await query.answer("Отклонено")
 
 if __name__ == "__main__":
-    logger.info("Запуск бота")
     executor.start_polling(dp, skip_updates=True)
