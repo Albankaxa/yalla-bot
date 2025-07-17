@@ -284,10 +284,42 @@ async def handle_other_messages(message: types.Message):
 async def on_startup(dp):
     """Функция, которая выполняется при запуске бота"""
     try:
-        await bot.delete_webhook()
-        logging.info("Webhook удален")
+        # Удаляем webhook и сбрасываем pending updates
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Webhook удален и pending updates сброшены")
     except Exception as e:
         logging.error(f"Ошибка при удалении webhook: {e}")
 
+async def on_shutdown(dp):
+    """Функция, которая выполняется при остановке бота"""
+    try:
+        await bot.close()
+        logging.info("Бот корректно остановлен")
+    except Exception as e:
+        logging.error(f"Ошибка при остановке бота: {e}")
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    import signal
+    import sys
+    
+    def signal_handler(sig, frame):
+        print('\n❌ Получен сигнал остановки. Завершаем работу...')
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        executor.start_polling(
+            dp, 
+            skip_updates=True, 
+            on_startup=on_startup,
+            on_shutdown=on_shutdown,
+            timeout=20,
+            relax=0.1
+        )
+    except KeyboardInterrupt:
+        print("\n❌ Работа прервана пользователем")
+    except Exception as e:
+        logging.error(f"Критическая ошибка при запуске: {e}")
+        print("❌ Проверьте, что другой экземпляр бота не запущен и токен корректен")
