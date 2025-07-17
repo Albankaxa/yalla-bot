@@ -287,13 +287,20 @@ async def on_startup(dp):
         # Удаляем webhook и сбрасываем pending updates
         await bot.delete_webhook(drop_pending_updates=True)
         logging.info("Webhook удален и pending updates сброшены")
+        
+        # Даем время API обработать запрос
+        await asyncio.sleep(1)
+        
     except Exception as e:
         logging.error(f"Ошибка при удалении webhook: {e}")
 
 async def on_shutdown(dp):
     """Функция, которая выполняется при остановке бота"""
     try:
-        await bot.close()
+        # Убираем deprecated метод close()
+        session = await bot.get_session()
+        if session:
+            await session.close()
         logging.info("Бот корректно остановлен")
     except Exception as e:
         logging.error(f"Ошибка при остановке бота: {e}")
@@ -301,6 +308,7 @@ async def on_shutdown(dp):
 if __name__ == '__main__':
     import signal
     import sys
+    import time
     
     def signal_handler(sig, frame):
         print('\n❌ Получен сигнал остановки. Завершаем работу...')
@@ -309,17 +317,42 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    try:
-        executor.start_polling(
-            dp, 
-            skip_updates=True, 
-            on_startup=on_startup,
-            on_shutdown=on_shutdown,
-            timeout=20,
-            relax=0.1
-        )
-    except KeyboardInterrupt:
-        print("\n❌ Работа прервана пользователем")
-    except Exception as e:
-        logging.error(f"Критическая ошибка при запуске: {e}")
-        print("❌ Проверьте, что другой экземпляр бота не запущен и токен корректен")
+    # Добавляем задержку перед запуском
+    logging.info("Ожидание 3 секунды перед запуском...")
+    time.sleep(3)
+    
+    max_retries = 3
+    retry_delay = 10  # секунд
+    
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"Попытка запуска {attempt + 1}/{max_retries}")
+            executor.start_polling(
+                dp, 
+                skip_updates=True, 
+                on_startup=on_startup,
+                on_shutdown=on_shutdown,
+                timeout=20,
+                relax=0.1
+            )
+            break  # Если успешно запустился, выходим из цикла
+            
+        except KeyboardInterrupt:
+            print("\n❌ Работа прервана пользователем")
+            break
+            
+        except Exception as e:
+            logging.error(f"Ошибка при запуске (попытка {attempt + 1}): {e}")
+            if "TerminatedByOtherGetUpdates" in str(e):
+                if attempt < max_retries - 1:
+                    logging.info(f"Ждем {retry_delay} секунд перед повторной попыткой...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Увеличиваем задержку экспоненциально
+                else:
+                    print("❌ Превышено максимальное количество попыток. Проверьте:")
+                    print("1. Что нет других запущенных экземпляров бота")
+                    print("2. Что токен корректен")
+                    print("3. Что бот не запущен в другом месте (локально, на сервере)")
+            else:
+                print(f"❌ Неожиданная ошибка: {e}")
+                break
