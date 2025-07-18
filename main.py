@@ -1,156 +1,139 @@
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
-)
-
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram.utils import executor
+from aiogram.dispatcher.filters import Text
 import logging
 import os
+import asyncio
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-
-# Получение токена бота из переменной окружения
 API_TOKEN = os.getenv("YOUR_BOT_TOKEN")
 ADMIN_ID = 884963545
 
-if not API_TOKEN:
-    raise ValueError("❌ Ошибка: переменная окружения 'YOUR_BOT_TOKEN' не задана")
+logging.basicConfig(level=logging.INFO)
 
-# Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# Состояния FSM для подачи объявления
-class PostAd(StatesGroup):
-    Category = State()
-    Description = State()
-    Photo = State()
-    Price = State()
-    City = State()
-    Contact = State()
-    Confirm = State()
+# --- FSM ---
+class Form(StatesGroup):
+    choosing_category = State()
+    choosing_city = State()
+    choosing_price_range = State()
+    showing_ads = State()
+    filtering_ads = State()
+    submitting_ad = State()
+    awaiting_moderation = State()
 
-# Главное меню
-main_menu_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu_kb.add(
-    KeyboardButton("1️⃣ Работа"),
-    KeyboardButton("2️⃣ Аренда жилья"),
-    KeyboardButton("3️⃣ Продажа авто"),
-    KeyboardButton("4️⃣ Мероприятия"),
-)
-main_menu_kb.add(
-    KeyboardButton("5️⃣ Барахолка"),
-    KeyboardButton("6️⃣ Даром"),
-)
-main_menu_kb.add(
-    KeyboardButton("📤 Подать объявление"),
-    KeyboardButton("📍 Выбрать город")
-)
+# --- Кнопки ---
+def main_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("1️⃣ Работа", "2️⃣ Аренда жилья")
+    kb.add("3️⃣ Продажа авто", "4️⃣ Мероприятия")
+    kb.add("📦 Барахолка", "🎁 Даром")
+    kb.add("📤 Подать объявление", "📍 Выбрать город")
+    return kb
 
-# Команда /start
-@dp.message_handler(commands=['start'])
-async def start_command(message: types.Message):
-    await message.answer(
-        "👋 Привет! Я бот для русскоязычных в Израиле 🇮🇱\n\nЧто вас интересует?",
-        reply_markup=main_menu_kb
-    )
+def city_menu():
+    cities = ["Тель-Авив", "Хайфа", "Ашдод", "Бат-Ям", "Нетания", "Иерусалим", "Ашкелон", "Беэр-Шева", "Ришон-ле-Цион", "Петах-Тиква"]
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    for i in range(0, len(cities), 2):
+        kb.add(cities[i], cities[i+1] if i+1 < len(cities) else "")
+    kb.add("⬅️ Назад")
+    return kb
 
-# Обработка выбора подачи объявления
-@dp.message_handler(lambda message: message.text == "📤 Подать объявление")
-async def start_posting(message: types.Message, state: FSMContext):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add("Работа", "Аренда жилья")
-    markup.add("Продажа авто", "Мероприятие")
-    markup.add("Барахолка", "Даром")
-    markup.add("🔙 Назад")
+def price_menu(category):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    if category == "2️⃣ Аренда жилья":
+        kb.add("До 3000₪", "3000–5000₪", "5000₪ и выше", "Не важно")
+    elif category == "3️⃣ Продажа авто":
+        kb.add("До 10,000₪", "10,000–20,000₪", "20,000–30,000₪", "30,000₪ и выше", "Не важно")
+    elif category == "📦 Барахолка":
+        kb.add("До 100₪", "100–500₪", "500–1000₪", "1000₪ и выше", "Не важно")
+    return kb
 
-    await PostAd.Category.set()
-    await message.answer("Что вы хотите разместить?", reply_markup=markup)
+def filter_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🔍 Поиск по ключевым словам", "🕒 Сортировать по дате")
+    kb.add("💸 Сортировать по цене", "📄 Показать все объявления")
+    kb.add("⬅️ Назад")
+    return kb
 
-# Назад
-@dp.message_handler(lambda message: message.text == "🔙 Назад", state="*")
-async def go_back(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.answer("Вы вернулись в главное меню", reply_markup=main_menu_kb)
+def ads_navigation_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📄 Показать еще")
+    kb.add("⬅️ Назад")
+    return kb
 
-# Категория объявления
-@dp.message_handler(state=PostAd.Category)
-async def set_category(message: types.Message, state: FSMContext):
-    if message.text == "🔙 Назад":
-        await go_back(message, state)
-        return
-    await state.update_data(category=message.text)
-    await PostAd.Description.set()
-    await message.answer("Опишите ваше объявление:")
-
-# Описание
-@dp.message_handler(state=PostAd.Description)
-async def set_description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await PostAd.Photo.set()
-    await message.answer("Пришлите фото или нажмите '🔙 Назад'")
-
-# Фото
-@dp.message_handler(content_types=['photo'], state=PostAd.Photo)
-async def set_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
-    await state.update_data(photo=photo_id)
-    await PostAd.Price.set()
-    await message.answer("Укажите цену (если вещь отдаётся бесплатно, напишите 0):")
-
-# Цена
-@dp.message_handler(state=PostAd.Price)
-async def set_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=message.text)
-    await PostAd.City.set()
-    await message.answer("В каком городе находится вещь/объект?")
-
-# Город
-@dp.message_handler(state=PostAd.City)
-async def set_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    await PostAd.Contact.set()
-    await message.answer("Оставьте контакт (номер или Telegram):")
-
-# Контакт
-@dp.message_handler(state=PostAd.Contact)
-async def set_contact(message: types.Message, state: FSMContext):
-    await state.update_data(contact=message.text)
-    data = await state.get_data()
-
-    text = (
-        f"📬 Новое объявление:\n"
-        f"📂 Категория: {data['category']}\n"
-        f"📝 Описание: {data['description']}\n"
-        f"🏙 Город: {data['city']}\n"
-        f"💰 Цена: {data['price']}₪\n"
-        f"📞 Контакт: {data['contact']}"
-    )
-
+def moderation_menu():
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("✅ Одобрить", callback_data="approve"),
-        InlineKeyboardButton("❌ Отклонить", callback_data="reject")
-    )
+    kb.add(InlineKeyboardButton("✅ Одобрить", callback_data="approve"))
+    kb.add(InlineKeyboardButton("❌ Отклонить", callback_data="reject"))
+    return kb
 
-    await bot.send_photo(chat_id=ADMIN_ID, photo=data['photo'], caption=text, reply_markup=kb)
-    await message.answer("✅ Ваше объявление отправлено на модерацию! Спасибо!")
-    await state.finish()
+# --- Команды ---
+@dp.message_handler(commands=['start'])
+async def start_handler(message: types.Message):
+    await message.answer("👋 Привет! Я бот для русскоязычных в Израиле 🇮🇱\nЧто вас интересует?", reply_markup=main_menu())
 
-# Хендлер для модерации
-@dp.callback_query_handler(lambda c: c.data in ["approve", "reject"])
-async def moderation_callback(call: types.CallbackQuery):
-    if call.data == "approve":
-        await call.message.edit_caption(call.message.caption + "\n\n✅ Объявление одобрено и опубликовано.")
-        # Здесь можно добавить публикацию в канал или группу
+# --- Выбор категории ---
+@dp.message_handler(lambda m: m.text in ["1️⃣ Работа", "2️⃣ Аренда жилья", "3️⃣ Продажа авто", "4️⃣ Мероприятия", "📦 Барахолка", "🎁 Даром"])
+async def category_chosen(message: types.Message, state: FSMContext):
+    await state.update_data(category=message.text)
+    await Form.choosing_city.set()
+    await message.answer("📍 Выберите город:", reply_markup=city_menu())
+
+# --- Выбор города ---
+@dp.message_handler(lambda m: m.text in ["Тель-Авив", "Хайфа", "Ашдод", "Бат-Ям", "Нетания", "Иерусалим", "Ашкелон", "Беэр-Шева", "Ришон-ле-Цион", "Петах-Тиква"], state=Form.choosing_city)
+async def city_chosen(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    await state.update_data(city=message.text)
+    category = user_data['category']
+    if category in ["2️⃣ Аренда жилья", "3️⃣ Продажа авто", "📦 Барахолка"]:
+        await Form.choosing_price_range.set()
+        await message.answer("💰 Выберите диапазон цен:", reply_markup=price_menu(category))
     else:
-        await call.message.edit_caption(call.message.caption + "\n\n❌ Объявление отклонено администратором.")
+        await Form.showing_ads.set()
+        await message.answer(f"🔍 Показываю объявления: {category} в {message.text}\n(Без фильтра по цене)", reply_markup=filter_menu())
+
+# --- Выбор ценового диапазона ---
+@dp.message_handler(state=Form.choosing_price_range)
+async def price_range_chosen(message: types.Message, state: FSMContext):
+    await state.update_data(price_range=message.text)
+    data = await state.get_data()
+    await Form.showing_ads.set()
+    await message.answer(f"🔍 Показываю объявления: {data['category']} в {data['city']} по цене: {data['price_range']}", reply_markup=filter_menu())
+
+# --- Отображение фильтров ---
+@dp.message_handler(lambda m: m.text.startswith("🔍") or m.text.startswith("🕒") or m.text.startswith("💸") or m.text.startswith("📄"), state=Form.showing_ads)
+async def handle_filters(message: types.Message, state: FSMContext):
+    await message.answer("📢 [Заглушка] Здесь будут показаны отфильтрованные объявления.", reply_markup=ads_navigation_menu())
+
+# --- Подать объявление ---
+@dp.message_handler(lambda m: m.text == "📤 Подать объявление")
+async def submit_ad_start(message: types.Message, state: FSMContext):
+    await Form.choosing_category.set()
+    await message.answer("📝 Выберите категорию объявления:", reply_markup=main_menu())
+
+# --- Назад ---
+@dp.message_handler(lambda m: m.text == "⬅️ Назад", state="*")
+async def go_back(message: types.Message, state: FSMContext):
+    current = await state.get_state()
+    if current == Form.choosing_price_range.state:
+        await Form.choosing_city.set()
+        await message.answer("📍 Вернитесь к выбору города:", reply_markup=city_menu())
+    elif current == Form.choosing_city.state:
+        await Form.choosing_category.set()
+        await message.answer("🔙 Выберите категорию:", reply_markup=main_menu())
+    elif current == Form.showing_ads.state:
+        await Form.choosing_price_range.set()
+        user_data = await state.get_data()
+        await message.answer("💰 Вернитесь к выбору цены:", reply_markup=price_menu(user_data['category']))
+    else:
+        await message.answer("🔙 Возврат невозможен")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
